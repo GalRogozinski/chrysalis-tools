@@ -159,10 +159,10 @@ func migrateSeedMap(legacyAPI *api.API, srcFileName string, infoFileName string,
 
 		fmt.Printf("%d to %d (%d)\t\r", from, to, i+1)
 
-		tailTxHash, ed25519PrvKey, addrHex, bndl, err := migrate(legacyAPI, seed, funds, tipsChan)
+		legAddr, tailTxHash, ed25519PrvKey, addrHex, bndl, migAddr, err := migrate(legacyAPI, seed, funds, tipsChan)
 		must(err)
 
-		if _, err := fmt.Fprintln(migrationInfoFile, tailTxHash, hex.EncodeToString(ed25519PrvKey), addrHex, funds); err != nil {
+		if _, err := fmt.Fprintln(migrationInfoFile, legAddr, migAddr, tailTxHash, hex.EncodeToString(ed25519PrvKey), addrHex, funds); err != nil {
 			must(err)
 		}
 
@@ -199,7 +199,7 @@ func broadcaster(legacyAPI *api.API, toBroadcast <-chan [][]trinary.Trytes) {
 		for _, bndl := range bundles {
 			go func(bndl []trinary.Trytes) {
 				defer wg.Done()
-				if _, err := legacyAPI.BroadcastTransactions(bndl...); err != nil {
+				if _, err := legacyAPI.StoreAndBroadcast(bndl); err != nil {
 					must(err)
 				}
 			}(bndl)
@@ -284,21 +284,21 @@ func randSeed() string {
 	return seed
 }
 
-func migrate(legacyAPI *api.API, seed string, val uint64, tipsChan <-chan *api.TransactionsToApprove) (string, ed25519.PrivateKey, string, []trinary.Trytes, error) {
+func migrate(legacyAPI *api.API, seed string, val uint64, tipsChan <-chan *api.TransactionsToApprove) (string, string, ed25519.PrivateKey, string, []trinary.Trytes, string, error) {
 	legacyAddr, err := address.GenerateAddress(seed, 0, consts.SecurityLevelMedium, true)
 	if err != nil {
-		return "", nil, "", nil, err
+		return "", "", nil, "", nil, "", err
 	}
 
 	pubKey, prvKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
-		return "", nil, "", nil, err
+		return "", "", nil, "", nil, "", err
 	}
 
 	ed25519Addr := iotago.AddressFromEd25519PubKey(pubKey)
 	migAddr, err := address.GenerateMigrationAddress(ed25519Addr, true)
 	if err != nil {
-		return "", nil, "", nil, err
+		return "", "", nil, "", nil, "", err
 	}
 
 	prepBundle, err := legacyAPI.PrepareTransfers(seed, bundle.Transfers{
@@ -314,20 +314,25 @@ func migrate(legacyAPI *api.API, seed string, val uint64, tipsChan <-chan *api.T
 		},
 	})
 	if err != nil {
-		return "", nil, "", nil, err
+		return "", "", nil, "", nil, "", err
 	}
 
 	tips := <-tipsChan
 
 	readyBundle, err := legacyAPI.AttachToTangle(tips.TrunkTransaction, tips.BranchTransaction, 1, prepBundle)
 	if err != nil {
-		return "", nil, "", nil, err
+		return "", "", nil, "", nil, "", err
+	}
+
+	_, err = legacyAPI.StoreAndBroadcast(readyBundle);
+	if err != nil {
+		return "", "", nil, "", nil, "", err
 	}
 
 	tailTx, err := transaction.AsTransactionObject(readyBundle[0])
 	if err != nil {
-		return "", nil, "", nil, err
+		return "", "", nil, "", nil, "", err
 	}
 
-	return tailTx.Hash, prvKey, hex.EncodeToString(ed25519Addr[:]), readyBundle, nil
+	return legacyAddr, tailTx.Hash, prvKey, hex.EncodeToString(ed25519Addr[:]), readyBundle, migAddr, nil
 }
